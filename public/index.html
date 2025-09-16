@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>To-Do Haha</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Glow halus + scrollbar tipis */
+    .glow { box-shadow: 0 0 24px rgba(56,189,248,.25), inset 0 0 0 1px rgba(2,132,199,.5) }
+    ::-webkit-scrollbar { height: 8px; width: 8px }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 999px }
+  </style>
+</head>
+<body class="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-black text-slate-200">
+  <!-- Navbar -->
+  <header class="sticky top-0 z-40 backdrop-blur bg-slate-950/60 border-b border-cyan-500/10">
+    <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="h-8 w-8 rounded-lg bg-gradient-to-br from-cyan-400 to-fuchsia-500 glow"></div>
+        <h1 class="text-xl font-semibold tracking-tight">To-Do • <span class="text-cyan-400">IYA JIR</span></h1>
+      </div>
+      <div id="stats" class="text-sm text-slate-400">0 item</div>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto px-4 pb-24">
+    <!-- Card input -->
+    <section class="mt-6 bg-slate-900/60 rounded-2xl border border-cyan-500/10 p-4 md:p-6 glow">
+      <div class="flex flex-col md:flex-row gap-3">
+        <input id="title" maxlength="200"
+          class="flex-1 bg-slate-800/70 border border-slate-700 rounded-xl px-4 py-3 outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/30"
+          placeholder="Tulis apa kek lu di sini blokk">
+        <button id="addBtn"
+          class="px-5 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-fuchsia-500 text-white font-medium hover:opacity-95 active:opacity-90 transition">
+          Tambah
+        </button>
+      </div>
+
+      <!-- Toolbar: filter + search + bulk -->
+      <div class="mt-4 flex flex-col md:flex-row gap-3 md:items-center md:justify-between">
+        <div class="flex gap-2">
+          <button data-filter="all" class="filter-btn px-3 py-1.5 text-sm rounded-lg border border-slate-700 hover:border-cyan-500/50">Semua</button>
+          <button data-filter="active" class="filter-btn px-3 py-1.5 text-sm rounded-lg border border-slate-700 hover:border-cyan-500/50">Belum</button>
+          <button data-filter="done" class="filter-btn px-3 py-1.5 text-sm rounded-lg border border-slate-700 hover:border-cyan-500/50">Selesai</button>
+        </div>
+        <div class="flex items-center gap-2">
+          <input id="search" placeholder="Cari…"
+                 class="w-56 bg-slate-800/70 border border-slate-700 rounded-lg px-3 py-2 outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/30">
+          <button id="clearDone"
+                  class="px-3 py-2 text-sm rounded-lg border border-pink-500/40 text-pink-300 hover:bg-pink-500/10">
+            Hapus yang selesai
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- List -->
+    <section class="mt-6">
+      <div id="list" class="grid gap-3"></div>
+      <div id="empty" class="hidden mt-8 text-center text-slate-500">
+        List masih kosong. Kamu bisa mulai dengan satu tugas kecil.
+      </div>
+    </section>
+  </main>
+
+  <!-- Toast -->
+  <div id="toast" class="pointer-events-none fixed inset-x-0 top-16 flex justify-center"></div>
+
+  <script>
+    const $ = s => document.querySelector(s);
+    const list = $('#list'), stats = $('#stats'), empty = $('#empty');
+    const title = $('#title'), addBtn = $('#addBtn'), search = $('#search');
+    const clearDone = $('#clearDone');
+    const filterBtns = [...document.querySelectorAll('.filter-btn')];
+
+    let todos = [];
+    let currentFilter = 'all';
+    let q = '';
+
+    const API = {
+      async list() {
+        const r = await fetch('/api/todos'); return r.json();
+      },
+      async add(title) {
+        const r = await fetch('/api/todos', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({title}) });
+        if (!r.ok) throw await r.json();
+        return r.json();
+      },
+      async setDone(id, done) {
+        const r = await fetch(`/api/todos/${id}/done`, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({done}) });
+        if (!r.ok) throw await r.json();
+        return r.json();
+      },
+      async setTitle(id, title) {
+        const r = await fetch(`/api/todos/${id}/title`, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({title}) });
+        if (!r.ok) throw await r.json();
+        return r.json();
+      },
+      async del(id) {
+        const r = await fetch(`/api/todos/${id}`, { method: 'DELETE' });
+        if (!r.ok && r.status !== 204) throw await r.json();
+      }
+    };
+
+    function toast(msg, ok=true) {
+      const t = document.createElement('div');
+      t.className = `pointer-events-auto mx-2 px-4 py-2 rounded-xl border mt-2 text-sm
+        ${ok ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-200' : 'bg-pink-500/15 border-pink-500/40 text-pink-200'}`;
+      t.textContent = msg;
+      $('#toast').appendChild(t);
+      setTimeout(() => t.remove(), 2200);
+    }
+
+    function fmt(s) { return new Date(s.replace(' ', 'T') + 'Z').toLocaleString(); }
+
+    function matchFilter(t) {
+      if (currentFilter === 'active' && t.done) return false;
+      if (currentFilter === 'done' && !t.done) return false;
+      if (q && !t.title.toLowerCase().includes(q)) return false;
+      return true;
+    }
+
+    function render() {
+      list.innerHTML = '';
+      const filtered = todos.filter(matchFilter);
+      if (filtered.length === 0) {
+        empty.classList.remove('hidden');
+      } else {
+        empty.classList.add('hidden');
+      }
+
+      filtered.forEach(t => {
+        const row = document.createElement('div');
+        row.className = `group bg-slate-900/60 border border-slate-800 rounded-2xl p-4 flex items-center gap-4 hover:border-cyan-500/40 transition`;
+        row.innerHTML = `
+          <input type="checkbox" ${t.done ? 'checked':''}
+            class="h-5 w-5 rounded-md border-slate-700 text-cyan-500 focus:ring-cyan-500/40">
+          <div class="flex-1">
+            <div class="text-base ${t.done ? 'line-through text-slate-500':'text-slate-200'} break-words">${escapeHtml(t.title)}</div>
+            <div class="text-xs text-slate-500 mt-1">Dibuat: ${fmt(t.created_at)} • Update: ${fmt(t.updated_at)}</div>
+          </div>
+          <div class="opacity-0 group-hover:opacity-100 transition flex gap-2">
+            <button class="edit px-3 py-1.5 text-xs rounded-lg border border-slate-700 hover:border-cyan-500/50">Edit</button>
+            <button class="del px-3 py-1.5 text-xs rounded-lg border border-pink-500/40 text-pink-300 hover:bg-pink-500/10">Hapus</button>
+          </div>
+        `;
+
+        // Toggle
+        row.querySelector('input[type="checkbox"]').onchange = async e => {
+          try {
+            const updated = await API.setDone(t.id, e.target.checked);
+            todos = todos.map(x => x.id === t.id ? updated : x);
+            render(); statsUpdate();
+          } catch (err) { toast(err.error || 'Gagal update status', false); }
+        };
+
+        // Edit
+        row.querySelector('.edit').onclick = async () => {
+          const val = prompt('Edit judul:', t.title);
+          if (val == null) return;
+          const v = val.trim();
+          if (!v) { toast('Judul kosong', false); return; }
+          if (v.length > 200) { toast('Maks 200 karakter', false); return; }
+          try {
+            const updated = await API.setTitle(t.id, v);
+            todos = todos.map(x => x.id === t.id ? updated : x);
+            render(); toast('Judul diperbarui');
+          } catch (err) { toast(err.error || 'Gagal edit', false); }
+        };
+
+        // Delete
+        row.querySelector('.del').onclick = async () => {
+          if (!confirm('Hapus to-do ini?')) return;
+          try {
+            await API.del(t.id);
+            todos = todos.filter(x => x.id !== t.id);
+            render(); statsUpdate(); toast('Dihapus');
+          } catch (err) { toast(err.error || 'Gagal hapus', false); }
+        };
+
+        list.appendChild(row);
+      });
+
+      statsUpdate();
+    }
+
+    function statsUpdate() {
+      const total = todos.length;
+      const done = todos.filter(t => t.done).length;
+      const active = total - done;
+      stats.textContent = `${total} item • ${active} belum • ${done} selesai`;
+      // Highlight tombol filter
+      filterBtns.forEach(b => {
+        b.classList.toggle('bg-cyan-500/20', b.dataset.filter === currentFilter);
+        b.classList.toggle('border-cyan-500/60', b.dataset.filter === currentFilter);
+        b.classList.toggle('text-cyan-200', b.dataset.filter === currentFilter);
+      });
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    // Events
+    addBtn.onclick = async () => {
+      const v = title.value.trim();
+      if (!v) return toast('Tulis sesuatu dulu', false);
+      if (v.length > 200) return toast('Maks 200 karakter', false);
+      try {
+        const row = await API.add(v);
+        todos.unshift(row);
+        title.value = '';
+        render(); toast('Ditambahkan');
+      } catch (err) {
+        toast(err.error || 'Gagal menambah', false);
+      }
+    };
+    title.addEventListener('keydown', e => { if (e.key === 'Enter') addBtn.click(); });
+
+    filterBtns.forEach(b => b.onclick = () => { currentFilter = b.dataset.filter; render(); });
+    search.oninput = () => { q = search.value.trim().toLowerCase(); render(); };
+
+    clearDone.onclick = async () => {
+      const doneIds = todos.filter(t => t.done).map(t => t.id);
+      if (doneIds.length === 0) return toast('Tidak ada yang selesai', false);
+      if (!confirm(`Hapus ${doneIds.length} item selesai?`)) return;
+      try {
+        // sequential to keep it simple
+        for (const id of doneIds) await API.del(id);
+        todos = todos.filter(t => !t.done);
+        render(); toast('Bersih!');
+      } catch { toast('Gagal hapus massal', false); }
+    };
+
+    // Init
+    (async function start() {
+      try {
+        todos = await API.list();
+        render();
+      } catch {
+        toast('Gagal memuat data', false);
+      }
+    })();
+  </script>
+</body>
+</html>
